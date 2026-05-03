@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Arrows Out</title>
+    <style>
+        /* CSS Variables for styling */
+        :root {
+            --bg-color: #ECF5EE;
+            --arrow-normal: #2D4F3A;
+            --arrow-blocked: #C0392B;
+            --dot-color: #C6C6C6;
+            --drop-active: #3498DB;
+            --drop-used: #C6C6C6;
+            --text-color: #2D4F3A;
+        }
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden; /* Prevent native scrolling */
+            touch-action: none; /* Crucial for custom pinch/pan */
+        }
+
+        /* UI Layer Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let clicks pass through to canvas */
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            pointer-events: auto;
+            background: linear-gradient(to bottom, var(--bg-color) 70%, transparent);
+        }
+
+        .lives {
+            display: flex;
+            gap: 5px;
+        }
+
+        .drop {
+            width: 18px;
+            height: 24px;
+            background-color: var(--drop-active);
+            border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+            clip-path: polygon(50% 0%, 100% 100%, 0% 100%); /* Simple drop shape fallback */
+        }
+        
+        /* Better drop shape */
+        .drop svg {
+            width: 20px;
+            height: 20px;
+            fill: var(--drop-active);
+            transition: fill 0.3s;
+        }
+        .drop.used svg {
+            fill: var(--drop-used);
+        }
+
+        .level-title {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: var(--text-color);
+        }
+
+        .hint-btn {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            position: relative;
+        }
+
+
+        /* Dialogs */
+        .dialog-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(236, 245, 238, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+            z-index: 10;
+        }
+
+        .dialog-box {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            text-align: center;
+            color: var(--text-color);
+            max-width: 90%;
+            width: 320px;
+        }
+
+        h1 { margin-top: 0; }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 8px;
+            background-color: var(--arrow-normal);
+            color: white;
+            font-size: 1.1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+
+        .btn:active { transform: scale(0.95); }
+        .btn:hover { opacity: 0.9; }
+        
+        .btn.hard { background-color: #E67E22; }
+        .btn.very-hard { background-color: #C0392B; }
+
+        .hidden { display: none !important; }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <header id="game-header" class="hidden">
+            <div class="lives" id="lives-container">
+                </div>
+            <div class="level-title" id="level-display">レベル 1</div>
+            <button class="hint-btn" id="hint-btn">💡</button>
+        </header>
+    </div>
+
+    <div id="menu-dialog" class="dialog-overlay">
+        <div class="dialog-box">
+            <h1>Arrows Out</h1>
+            <p>難易度を選択してください</p>
+            <button class="btn" onclick="startGame('easy')">イージー</button>
+            <button class="btn" onclick="startGame('normal')">ノーマル</button>
+            <button class="btn hard" onclick="startGame('hard')">ハード</button>
+            <button class="btn very-hard" onclick="startGame('veryHard')">ベリーハード</button>
+        </div>
+    </div>
+
+    <div id="result-dialog" class="dialog-overlay hidden">
+        <div class="dialog-box">
+            <h1 id="result-title">クリア！</h1>
+            <button class="btn" onclick="returnToMenu()">メニューに戻る</button>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * Configuration & Parameters
+         */
+        const CONFIG = {
+            colors: {
+                bg: '#ECF5EE',
+                arrowNormal: '#2D4F3A',
+                arrowBlocked: '#C0392B',
+                dot: '#C6C6C6',
+                highlight: 'rgba(241, 196, 15, 0.5)'
+            },
+            difficulties: {
+                easy: { cols: 10, rows: 15, fillTarget: 0.9, maxLength: 8, name: 'イージー' },
+                normal: { cols: 16, rows: 24, fillTarget: 0.95, maxLength: 15, name: 'ノーマル' },
+                hard: { cols: 32, rows: 48, fillTarget: 0.98, maxLength: 30, name: 'ハード' },
+                veryHard: { cols: 50, rows: 75, fillTarget: 0.99, maxLength: 50, name: 'ベリーハード' }
+            },
+            maxLives: 3,
+            cellSize: 40 // Base cell size in pixels before zoom
+        };
+
+        const DIRS = [
+            { dx: 0, dy: -1 }, // Up
+            { dx: 1, dy: 0 },  // Right
+            { dx: 0, dy: 1 },  // Down
+            { dx: -1, dy: 0 }  // Left
+        ];
+
+        /**
+         * Game State Management
+         */
+        let canvas, ctx;
+        let arrows = [];
+        let grid = [];
+        let autoClearQueue = new Set();
+        let currentDifficulty;
+        let lives = CONFIG.maxLives;
+        let isPlaying = false;
+        
+        // Camera/Viewport
+        let camera = { x: 0, y: 0, zoom: 1 };
+        let isDragging = false;
+        let dragStart = { x: 0, y: 0 };
+        let cameraStart = { x: 0, y: 0 };
+        let initialPinchDist = 0;
+        let lastClickTime = 0;
+
+        /**
+         * Arrow Class representing a single arrow on the board
+         */
+        class Arrow {
+            constructor(id, body, dir) {
+                this.id = id;
+                this.body = body; // Array of {x, y}, index 0 is tail, last is head
+                this.dir = dir;   // {dx, dy} pointing direction
+                this.state = 'idle'; // 'idle', 'blocked', 'exiting'
+                this.color = CONFIG.colors.arrowNormal;
+                this.offset = { x: 0, y: 0 }; // For animations (blocked shake)
+                this.animTimer = 0;
+                this.highlight = false;
+                this.exitProgress = 0; // For snake-like exiting animation
+            }
+
+            get head() { return this.body[this.body.length - 1]; }
+
+            update(dt) {
+                if (this.state === 'exiting') {
+                    // Snake-like movement forward
+                    const speed = 15 * dt; 
+                    this.exitProgress += speed;
+                } else if (this.state === 'blocked') {
+                    // Shake animation
+                    this.animTimer += dt;
+                    if (this.animTimer > 0.5) {
+                        this.offset = { x: 0, y: 0 }; // Return to original position visually, but stay red
+                    } else {
+                        const shake = Math.sin(this.animTimer * 40) * 0.15;
+                        this.offset.x = this.dir.dx * shake;
+                        this.offset.y = this.dir.dy * shake;
+                    }
+                }
+            }
+
+            draw(ctx, cs) {
+                ctx.save();
+                
+                // Only apply translate offset for blocked shake
+                if (this.state !== 'exiting') {
+                    ctx.translate(this.offset.x * cs, this.offset.y * cs);
+                }
+
+                if (this.highlight && this.state !== 'exiting') {
+                    ctx.beginPath();
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.lineWidth = cs * 0.4;
+                    ctx.strokeStyle = CONFIG.colors.highlight;
+                    ctx.moveTo(this.body[0].x * cs + cs/2, this.body[0].y * cs + cs/2);
+                    for (let i = 1; i < this.body.length; i++) {
+                        ctx.lineTo(this.body[i].x * cs + cs/2, this.body[i].y * cs + cs/2);
+                    }
+                    ctx.stroke();
+                }
+
+                ctx.beginPath();
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.lineWidth = cs * 0.2; // Thinner lines
+                ctx.strokeStyle = this.state === 'blocked' ? CONFIG.colors.arrowBlocked : this.color;
+
+                let N = this.body.length;
+                
+                // Helper to get exact position along the path (including extension for exiting)
+                const getPoint = (i) => {
+                    let idx = Math.floor(i);
+                    let frac = i - idx;
+                    let p1, p2;
+                    
+                    if (idx < N - 1) {
+                        p1 = this.body[idx];
+                        p2 = this.body[idx + 1];
+                    } else {
+                        let over1 = idx - (N - 1);
+                        p1 = { x: this.head.x + this.dir.dx * over1, y: this.head.y + this.dir.dy * over1 };
+                        let over2 = over1 + 1;
+                        p2 = { x: this.head.x + this.dir.dx * over2, y: this.head.y + this.dir.dy * over2 };
+                    }
+                    
+                    return {
+                        x: p1.x + (p2.x - p1.x) * frac,
+                        y: p1.y + (p2.y - p1.y) * frac
+                    };
+                };
+
+                let startL = 0;
+                let endL = N - 1;
+                
+                if (this.state === 'exiting') {
+                    startL = this.exitProgress;
+                    endL = N - 1 + this.exitProgress;
+                }
+
+                // Draw Body
+                let pt0 = getPoint(startL);
+                ctx.moveTo(pt0.x * cs + cs/2, pt0.y * cs + cs/2);
+                
+                for (let idx = Math.floor(startL) + 1; idx <= Math.floor(endL); idx++) {
+                    let pt = getPoint(idx);
+                    ctx.lineTo(pt.x * cs + cs/2, pt.y * cs + cs/2);
+                }
+                
+                let ptEnd = getPoint(endL);
+                ctx.lineTo(ptEnd.x * cs + cs/2, ptEnd.y * cs + cs/2);
+                ctx.stroke();
+
+                // Draw Head (Triangle)
+                const hx = ptEnd.x * cs + cs/2;
+                const hy = ptEnd.y * cs + cs/2;
+                const headSize = cs * 0.4;
+                
+                ctx.translate(hx, hy);
+                ctx.rotate(Math.atan2(this.dir.dy, this.dir.dx));
+                
+                ctx.beginPath();
+                ctx.fillStyle = ctx.strokeStyle;
+                ctx.moveTo(headSize, 0);
+                ctx.lineTo(-headSize * 0.5, headSize * 0.7);
+                ctx.lineTo(-headSize * 0.5, -headSize * 0.7);
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        /**
+         * Generation Logic - Reverse Escaping Algorithm (Guarantee No Stacks)
+         */
+        function generateLevel(cols, rows, fillTarget, maxLength) {
+            grid = Array.from({ length: rows }, () => Array(cols).fill(null));
+            arrows = [];
+            
+            let targetCells = Math.floor(cols * rows * fillTarget);
+            let filledCells = 0;
+            let fails = 0;
+
+            while (filledCells < targetCells && fails < 20000) {
+                // 1. Random Head Position
+                let hx = Math.floor(Math.random() * cols);
+                let hy = Math.floor(Math.random() * rows);
+                
+                if (grid[hy][hx] !== null) { fails++; continue; }
+
+                let dirs = [...DIRS].sort(() => Math.random() - 0.5);
+                let arrowPlaced = false;
+
+                for (let dir of dirs) {
+                    // 2. Check escape path and establish "line of sight" (cannot collide with itself)
+                    let escapeLine = new Set();
+                    let cx = hx + dir.dx;
+                    let cy = hy + dir.dy;
+                    let canEscape = true;
+                    
+                    while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
+                        if (grid[cy][cx] !== null) { canEscape = false; break; }
+                        escapeLine.add(`${cx},${cy}`); // Mark line of sight
+                        cx += dir.dx; cy += dir.dy;
+                    }
+                    
+                    if (!canEscape) continue;
+
+                    // 3. Ensure straight body segment immediately behind head
+                    let nx = hx - dir.dx;
+                    let ny = hy - dir.dy;
+                    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows || grid[ny][nx] !== null || escapeLine.has(`${nx},${ny}`)) {
+                        continue;
+                    }
+
+                    // 4. Generate Body via Random Walk backwards
+                    let body = [{x: hx, y: hy}, {x: nx, y: ny}];
+                    let len = Math.floor(Math.random() * (maxLength - 2)) + 3; 
+                    let bx = nx, by = ny;
+                    let pathSet = new Set([`${hx},${hy}`, `${nx},${ny}`]);
+
+                    for (let i = 2; i < len; i++) {
+                        let possibleMoves = [];
+                        for (let d of DIRS) {
+                            let n_x = bx + d.dx;
+                            let n_y = by + d.dy;
+                            // Ensure not colliding with grid, not colliding with own body, and NOT crossing own escape line
+                            if (n_x >= 0 && n_x < cols && n_y >= 0 && n_y < rows && 
+                                grid[n_y][n_x] === null && 
+                                !pathSet.has(`${n_x},${n_y}`) &&
+                                !escapeLine.has(`${n_x},${n_y}`)) {
+                                possibleMoves.push({x: n_x, y: n_y});
+                            }
+                        }
+
+                        if (possibleMoves.length === 0) break; // Trapped
+
+                        let next = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
+                        body.push(next);
+                        pathSet.add(`${next.x},${next.y}`);
+                        bx = next.x; by = next.y;
+                    }
+
+                    // 5. Reverse array so [0] is tail, last is head
+                    body.reverse();
+
+                    // 6. Register Arrow
+                    let arrow = new Arrow(arrows.length, body, dir);
+                    arrows.push(arrow);
+                    for (let pt of body) {
+                        grid[pt.y][pt.x] = arrow.id;
+                    }
+                    
+                    filledCells += body.length;
+                    arrowPlaced = true;
+                    break;
+                }
+                
+                if (arrowPlaced) {
+                    fails = 0; // Reset fails on success
+                } else {
+                    fails++;
+                }
+            }
+            
+            console.log(`Generated ${arrows.length} arrows, filled ${filledCells}/${targetCells} cells`);
+        }
+
+        /**
+         * Game Logic & Interaction
+         */
+        function checkEscape(arrow) {
+            let cx = arrow.head.x + arrow.dir.dx;
+            let cy = arrow.head.y + arrow.dir.dy;
+            while (cx >= 0 && cx < currentDifficulty.cols && cy >= 0 && cy < currentDifficulty.rows) {
+                // If hitting another arrow that is not exiting
+                let cellId = grid[cy][cx];
+                if (cellId !== null && cellId !== arrow.id) {
+                    let blockingArrow = arrows.find(a => a.id === cellId);
+                    if (blockingArrow && blockingArrow.state !== 'exiting') {
+                        return false;
+                    }
+                }
+                cx += arrow.dir.dx; cy += arrow.dir.dy;
+            }
+            return true;
+        }
+
+        function handleTap(worldX, worldY) {
+            if (!isPlaying) return;
+
+            let gx = Math.floor(worldX);
+            let gy = Math.floor(worldY);
+
+            if (gx >= 0 && gx < currentDifficulty.cols && gy >= 0 && gy < currentDifficulty.rows) {
+                let clickedId = grid[gy][gx];
+                if (clickedId !== null) {
+                    let arrow = arrows.find(a => a.id === clickedId);
+                    if (arrow && arrow.state !== 'exiting') {
+                        attemptMove(arrow, true);
+                    }
+                }
+            }
+        }
+
+        function attemptMove(arrow, isPlayerClick = false) {
+            if (checkEscape(arrow)) {
+                // Success
+                arrow.state = 'exiting';
+                autoClearQueue.delete(arrow);
+                // Clear grid occupied by this arrow
+                for (let pt of arrow.body) grid[pt.y][pt.x] = null;
+                
+                checkWin();
+            } else {
+                // Blocked
+                if (isPlayerClick && arrow.state !== 'blocked') {
+                    loseLife();
+                }
+                arrow.state = 'blocked';
+                arrow.animTimer = 0;
+                autoClearQueue.add(arrow);
+            }
+        }
+
+        // Auto-clear logic: Keep checking blocked red arrows to see if their path cleared
+        setInterval(() => {
+            if (!isPlaying) return;
+            for (let arrow of autoClearQueue) {
+                if (checkEscape(arrow)) {
+                    attemptMove(arrow, false);
+                }
+            }
+        }, 100); // Check every 100ms
+
+        function loseLife() {
+            lives--;
+            updateLivesUI();
+            if (lives <= 0) {
+                gameOver(false);
+            }
+        }
+
+        function checkWin() {
+            if (arrows.every(a => a.state === 'exiting')) {
+                setTimeout(() => gameOver(true), 1000);
+            }
+        }
+
+        function showHint() {
+            if (!isPlaying) return;
+            for (let arrow of arrows) {
+                if (arrow.state !== 'exiting' && checkEscape(arrow)) {
+                    arrow.highlight = true;
+                    setTimeout(() => arrow.highlight = false, 1500);
+                    break;
+                }
+            }
+        }
+
+        /**
+         * UI and Flow Management
+         */
+        const dropSVG = `<div class="drop"><svg viewBox="0 0 24 24"><path d="M12,2c0,0-8,8.5-8,14a8,8 0 0,0 16,0c0-5.5-8-14-8-14z"/></svg></div>`;
+
+        function updateLivesUI() {
+            const container = document.getElementById('lives-container');
+            container.innerHTML = '';
+            for (let i = 0; i < CONFIG.maxLives; i++) {
+                container.innerHTML += (i < lives) ? dropSVG : dropSVG.replace('class="drop"', 'class="drop used"');
+            }
+        }
+
+        function startGame(diffKey) {
+            currentDifficulty = CONFIG.difficulties[diffKey];
+            document.getElementById('menu-dialog').classList.add('hidden');
+            document.getElementById('result-dialog').classList.add('hidden');
+            document.getElementById('game-header').classList.remove('hidden');
+            document.getElementById('level-display').innerText = currentDifficulty.name;
+            
+            lives = CONFIG.maxLives;
+            updateLivesUI();
+            autoClearQueue.clear();
+
+            generateLevel(currentDifficulty.cols, currentDifficulty.rows, currentDifficulty.fillTarget, currentDifficulty.maxLength);
+            
+            // Center camera
+            camera.zoom = Math.min(
+                window.innerWidth / (currentDifficulty.cols * CONFIG.cellSize),
+                (window.innerHeight - 60) / (currentDifficulty.rows * CONFIG.cellSize)
+            ) * 0.9;
+            
+            camera.x = (window.innerWidth - (currentDifficulty.cols * CONFIG.cellSize * camera.zoom)) / 2;
+            camera.y = (window.innerHeight - (currentDifficulty.rows * CONFIG.cellSize * camera.zoom)) / 2 + 30; // offset for header
+
+            isPlaying = true;
+            lastTime = performance.now();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function gameOver(isWin) {
+            isPlaying = false;
+            document.getElementById('result-dialog').classList.remove('hidden');
+            document.getElementById('result-title').innerText = isWin ? "レベルクリア！ 🎉" : "ゲームオーバー 💀";
+            document.getElementById('game-header').classList.add('hidden');
+        }
+
+        function returnToMenu() {
+            document.getElementById('result-dialog').classList.add('hidden');
+            document.getElementById('menu-dialog').classList.remove('hidden');
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear screen
+        }
+
+        document.getElementById('hint-btn').addEventListener('click', showHint);
+
+        /**
+         * Input Handling (Mouse & Touch Pan/Zoom)
+         */
+        function setupInput() {
+            canvas.addEventListener('pointerdown', (e) => {
+                isDragging = true;
+                dragStart = { x: e.clientX, y: e.clientY };
+                cameraStart = { x: camera.x, y: camera.y };
+                lastClickTime = performance.now();
+            });
+
+            window.addEventListener('pointermove', (e) => {
+                if (isDragging) {
+                    camera.x = cameraStart.x + (e.clientX - dragStart.x);
+                    camera.y = cameraStart.y + (e.clientY - dragStart.y);
+                }
+            });
+
+            window.addEventListener('pointerup', (e) => {
+                isDragging = false;
+                
+                // If moved very little, treat as tap
+                let dist = Math.hypot(e.clientX - dragStart.x, e.clientY - dragStart.y);
+                if (dist < 10 && (performance.now() - lastClickTime) < 500) {
+                    let cs = CONFIG.cellSize * camera.zoom;
+                    let worldX = (e.clientX - camera.x) / cs;
+                    let worldY = (e.clientY - camera.y) / cs;
+                    handleTap(worldX, worldY);
+                }
+            });
+
+            // Mouse Wheel Zoom
+            canvas.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                let zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+                
+                // Zoom around mouse pointer
+                let mouseWorldX = (e.clientX - camera.x) / camera.zoom;
+                let mouseWorldY = (e.clientY - camera.y) / camera.zoom;
+
+                camera.zoom *= zoomFactor;
+                camera.zoom = Math.max(0.2, Math.min(camera.zoom, 3)); // Clamp zoom
+
+                camera.x = e.clientX - mouseWorldX * camera.zoom;
+                camera.y = e.clientY - mouseWorldY * camera.zoom;
+            }, { passive: false });
+            
+            // Mobile Pinch Zoom (Simplified via Touch Events)
+            let pinchStartDistance = 0;
+            canvas.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 2) {
+                    isDragging = false; // Override drag
+                    pinchStartDistance = Math.hypot(
+                        e.touches[0].clientX - e.touches[1].clientX,
+                        e.touches[0].clientY - e.touches[1].clientY
+                    );
+                }
+            }, { passive: false });
+
+            canvas.addEventListener('touchmove', (e) => {
+                if (e.touches.length === 2) {
+                    e.preventDefault();
+                    let dist = Math.hypot(
+                        e.touches[0].clientX - e.touches[1].clientX,
+                        e.touches[0].clientY - e.touches[1].clientY
+                    );
+                    
+                    let zoomFactor = dist / pinchStartDistance;
+                    camera.zoom *= (zoomFactor > 1 ? 1.05 : 0.95);
+                    camera.zoom = Math.max(0.2, Math.min(camera.zoom, 3));
+                    pinchStartDistance = dist;
+                }
+            }, { passive: false });
+        }
+
+        /**
+         * Render Loop
+         */
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            if (!isPlaying) return;
+            
+            let dt = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            // Resize Canvas to window
+            if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.save();
+            ctx.translate(camera.x, camera.y);
+            
+            let cs = CONFIG.cellSize * camera.zoom;
+
+            // --- Clipping for Grid Margin ---
+            ctx.save();
+            ctx.beginPath();
+            // Clip to grid size plus 2 cells margin
+            ctx.rect(-2 * cs, -2 * cs, (currentDifficulty.cols + 4) * cs, (currentDifficulty.rows + 4) * cs);
+            ctx.clip();
+            // ---------------------------------
+
+            // Draw Dots (Grid)
+            ctx.fillStyle = CONFIG.colors.dot;
+            for (let y = 0; y < currentDifficulty.rows; y++) {
+                for (let x = 0; x < currentDifficulty.cols; x++) {
+                    ctx.beginPath();
+                    ctx.arc(x * cs + cs/2, y * cs + cs/2, cs * 0.08, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // Update & Draw Arrows
+            for (let i = arrows.length - 1; i >= 0; i--) {
+                let arrow = arrows[i];
+                arrow.update(dt);
+                
+                // Remove if far off screen
+                if (arrow.state === 'exiting') {
+                    if (arrow.exitProgress > Math.max(currentDifficulty.cols, currentDifficulty.rows) + 5) {
+                        arrows.splice(i, 1);
+                        continue;
+                    }
+                }
+                arrow.draw(ctx, cs);
+            }
+
+            ctx.restore(); // Restore from clipping
+            ctx.restore(); // Restore from translation
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Initialize
+        window.onload = () => {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            setupInput();
+        };
+
+    </script>
+</body>
+</html>
