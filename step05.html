@@ -355,155 +355,171 @@
             }
         }
 
-        /**
-         * Generation Logic - Forward DAG Placement Algorithm (High Density, Guaranteed Solvable)
-         */
-        function generateLevel(cols, rows, fillTarget, maxLength) {
-            grid = Array.from({ length: rows }, () => Array(cols).fill(null));
-            arrows = [];
-            let deps = new Map(); // Directed Acyclic Graph: arrowId -> Set of arrowIds it depends on
-            
-            let targetCells = Math.floor(cols * rows * fillTarget);
-            let filledCells = 0;
-            let fails = 0;
-            let arrowIdCounter = 0;
+/**
+ * Advanced Dense Generation Logic
+ *
+ * 改良点:
+ * - 「単純なランダム後退」ではなく「成長フロンティア方式」を採用
+ * - 常に既存矢印の“内側”へ潜り込むように生成
+ * - 外周から内周へレイヤー状に埋める
+ * - 通路幅を意図的に1セル化して連鎖依存を増やす
+ * - 高密度でも必ず解法が存在
+ * - 頭直後2マスは必ず直線
+ */
 
-            while (filledCells < targetCells && fails < 5000) {
-                let hx = Math.floor(Math.random() * cols);
-                let hy = Math.floor(Math.random() * rows);
-                
-                if (grid[hy][hx] !== null) { fails++; continue; }
+function shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+}
 
-                let dirs = [...DIRS].sort(() => Math.random() - 0.5);
-                let arrowPlaced = false;
+function inBounds(x, y, cols, rows) {
+    return x >= 0 && x < cols && y >= 0 && y < rows;
+}
 
-                for (let dir of dirs) {
-                    // 1. Establish line of sight (forward ray) to prevent pointing at own body
-                    let escapeLine = new Set();
-                    let cx = hx + dir.dx;
-                    let cy = hy + dir.dy;
-                    while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
-                        escapeLine.add(`${cx},${cy}`);
-                        cx += dir.dx; cy += dir.dy;
-                    }
+function cellKey(x, y) {
+    return `${x},${y}`;
+}
 
-                    // 2. Ensure straight body segment immediately behind head
-                    let nx = hx - dir.dx;
-                    let ny = hy - dir.dy;
-                    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows || grid[ny][nx] !== null || escapeLine.has(`${nx},${ny}`)) {
-                        continue;
-                    }
+function isEmptyCell(x, y, cols, rows) {
+    return inBounds(x, y, cols, rows) && grid[y][x] === null;
+}
 
-                    // 3. Generate Body via Random Walk backwards
-                    let body = [{x: hx, y: hy}, {x: nx, y: ny}];
-                    let len = Math.floor(Math.random() * (maxLength - 2)) + 3; 
-                    let bx = nx, by = ny;
-                    let pathSet = new Set([`${hx},${hy}`, `${nx},${ny}`]);
+function countEmptyNeighbors(x, y, cols, rows) {
+    let c = 0;
+    for (const d of DIRS) {
+        const nx = x + d.dx;
+        const ny = y + d.dy;
+        if (inBounds(nx, ny, cols, rows) && grid[ny][nx] === null) c++;
+    }
+    return c;
+}
 
-                    for (let i = 2; i < len; i++) {
-                        let possibleMoves = [];
-                        for (let d of DIRS) {
-                            let n_x = bx + d.dx;
-                            let n_y = by + d.dy;
-                            if (n_x >= 0 && n_x < cols && n_y >= 0 && n_y < rows && 
-                                grid[n_y][n_x] === null && 
-                                !pathSet.has(`${n_x},${n_y}`) &&
-                                !escapeLine.has(`${n_x},${n_y}`)) {
-                                possibleMoves.push({x: n_x, y: n_y});
-                            }
-                        }
+function canPlaceCell(x, y, occupied, cols, rows) {
+    if (!inBounds(x, y, cols, rows)) return false;
+    if (grid[y][x] !== null) return false;
+    if (occupied.has(cellKey(x, y))) return false;
 
-                        if (possibleMoves.length === 0) break;
+    // 密集度向上:
+    // 周囲がスカスカな場所を避ける
+    let nearbyFilled = 0;
+    for (const d of DIRS) {
+        const nx = x + d.dx;
+        const ny = y + d.dy;
+        if (!inBounds(nx, ny, cols, rows)) continue;
 
-                        let next = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
-                        body.push(next);
-                        pathSet.add(`${next.x},${next.y}`);
-                        bx = next.x; by = next.y;
-                    }
-
-                    if (body.length < 3) continue; // Keep minimum length reasonable
-
-                    body.reverse(); // so [0] is tail, last is head
-
-                    // 4. DAG Cycle Detection preparation
-                    // newDeps: existing arrows that this new arrow will point towards
-                    let newDeps = new Set();
-                    cx = hx + dir.dx; cy = hy + dir.dy;
-                    while (cx >= 0 && cx < cols && cy >= 0 && cy < rows) {
-                        if (grid[cy][cx] !== null) newDeps.add(grid[cy][cx]);
-                        cx += dir.dx; cy += dir.dy;
-                    }
-
-                    // newRevDeps: existing arrows that will point towards this new arrow's body
-                    let newRevDeps = new Set();
-                    for (let existing of arrows) {
-                        let ex = existing.head.x + existing.dir.dx;
-                        let ey = existing.head.y + existing.dir.dy;
-                        while (ex >= 0 && ex < cols && ey >= 0 && ey < rows) {
-                            if (pathSet.has(`${ex},${ey}`)) {
-                                newRevDeps.add(existing.id);
-                                break; 
-                            }
-                            ex += existing.dir.dx; ey += existing.dir.dy;
-                        }
-                    }
-
-                    // 5. Cycle Check (BFS)
-                    // If any node in newDeps can reach any node in newRevDeps, a cycle is formed.
-                    let hasCycle = false;
-                    if (newDeps.size > 0 && newRevDeps.size > 0) {
-                        let visited = new Set(newDeps);
-                        let queue = Array.from(newDeps);
-                        
-                        // Quick overlap check
-                        for (let t of newRevDeps) {
-                            if (visited.has(t)) { hasCycle = true; break; }
-                        }
-
-                        if (!hasCycle) {
-                            let headIdx = 0;
-                            while(headIdx < queue.length) {
-                                let u = queue[headIdx++];
-                                if (newRevDeps.has(u)) { hasCycle = true; break; }
-                                let neighbors = deps.get(u) || new Set();
-                                for (let v of neighbors) {
-                                    if (!visited.has(v)) {
-                                        visited.add(v);
-                                        queue.push(v);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (hasCycle) continue; // Rejects placement as it creates an unsolvable deadlock
-
-                    // 6. Register Arrow safely
-                    let arrowId = arrowIdCounter++;
-                    let arrow = new Arrow(arrowId, body, dir);
-                    arrows.push(arrow);
-                    for (let pt of body) {
-                        grid[pt.y][pt.x] = arrowId;
-                    }
-                    
-                    // Update DAG
-                    deps.set(arrowId, newDeps);
-                    for (let r of newRevDeps) {
-                        if (!deps.has(r)) deps.set(r, new Set());
-                        deps.get(r).add(arrowId);
-                    }
-                    
-                    filledCells += body.length;
-                    arrowPlaced = true;
-                    break;
-                }
-                
-                if (arrowPlaced) fails = 0;
-                else fails++;
-            }
-            
-            console.log(`Generated ${arrows.length} arrows, filled ${filledCells}/${targetCells} cells`);
+        if (grid[ny][nx] !== null || occupied.has(cellKey(nx, ny))) {
+            nearbyFilled++;
         }
+    }
+
+    return nearbyFilled >= 1;
+}
+
+function generateDenseArrow(startX, startY, dir, cols, rows, maxLength) {
+    const body = [];
+    const occupied = new Set();
+
+    // head
+    body.push({ x: startX, y: startY });
+    occupied.add(cellKey(startX, startY));
+
+    // 頭の後ろ2マスは必ず直線
+    let cx = startX;
+    let cy = startY;
+
+    for (let i = 0; i < 2; i++) {
+        cx -= dir.dx;
+        cy -= dir.dy;
+
+        if (!isEmptyCell(cx, cy, cols, rows)) {
+            return null;
+}
+        body.push({ x: cx, y: cy });
+    for (let y = 1; y < rows - 1; y++) {
+        frontier.push({ x: 0, y, dir: DIRS[1] });
+        frontier.push({ x: cols - 1, y, dir: DIRS[3] });
+    }
+
+    while (filledCells < targetCells && attempts < 40000 && frontier.length > 0) {
+        attempts++;
+
+        const idx = Math.floor(Math.random() * frontier.length);
+        const start = frontier.splice(idx, 1)[0];
+
+        const hx = start.x;
+        const hy = start.y;
+        const dir = start.dir;
+
+        if (!isEmptyCell(hx, hy, cols, rows)) continue;
+
+        // escape line 必須確保
+        let escapeOK = true;
+        let tx = hx + dir.dx;
+        let ty = hy + dir.dy;
+
+        while (inBounds(tx, ty, cols, rows)) {
+            if (grid[ty][tx] !== null) {
+                escapeOK = false;
+                break;
+            }
+            tx += dir.dx;
+            ty += dir.dy;
+        }
+
+        if (!escapeOK) continue;
+
+        const body = generateDenseArrow(hx, hy, dir, cols, rows, maxLength);
+
+        if (!body) continue;
+
+        const arrow = new Arrow(arrows.length, body, dir);
+
+        arrows.push(arrow);
+
+        for (const pt of body) {
+            grid[pt.y][pt.x] = arrow.id;
+            filledCells++;
+        }
+
+        // 「新しい矢印の内部」を次の生成候補にする
+        // これにより外→内へ層状構造ができる
+        for (const pt of body) {
+            for (const d of DIRS) {
+                const nx = pt.x + d.dx;
+                const ny = pt.y + d.dy;
+
+                if (!inBounds(nx, ny, cols, rows)) continue;
+                if (grid[ny][nx] !== null) continue;
+
+                // 既存矢印に囲まれた場所を優先生成
+                let nearby = 0;
+                for (const d2 of DIRS) {
+                    const ax = nx + d2.dx;
+                    const ay = ny + d2.dy;
+
+                    if (inBounds(ax, ay, cols, rows) && grid[ay][ax] !== null) {
+                        nearby++;
+                    }
+                }
+
+                if (nearby >= 2) {
+                    frontier.push({
+                        x: nx,
+                        y: ny,
+                        dir: d
+                    });
+                }
+            }
+        }
+    }
+
+    console.log(
+        `Generated ${arrows.length} arrows, filled ${filledCells}/${targetCells} cells (${Math.floor(filledCells / (cols * rows) * 100)}%)`
+    );
+}
 
         /**
          * Game Logic & Interaction
